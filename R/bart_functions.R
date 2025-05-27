@@ -61,8 +61,18 @@ predict_bart <- function(bart_model, layers, cutoff = NULL) {
     # Define quantiles for posterior predictive distribution
     quantiles <- c(0.025, 0.975)
 
-    # Convert raster stack to matrix
+    # Convert raster stack to matrix (data.frame to handle categorical variables)
     input_matrix <- terra::as.matrix(layers)
+    input_matrix <- as.data.frame(input_matrix)
+    categorical_cols <- names(layers)[terra::is.factor(layers)]
+    for (col in categorical_cols) {
+      if (!is.null(terra::levels(layers[[col]])[[1]][, 2])) {
+        fact_labels <- terra::levels(layers[[col]])[[1]][, 2]
+      } else {
+        fact_labels <- terra::levels(layers[[col]])[[1]][, 1]
+      }
+      input_matrix[[col]] <- factor(input_matrix[[col]], levels = terra::levels(layers[[col]])[[1]][, 1], labels = fact_labels)
+    }
 
     # Initialize output data frame for predictions
     blank_output <- data.frame(matrix(ncol = (4 + length(quantiles) + ifelse(!is.null(cutoff), 1, 0)),
@@ -134,16 +144,43 @@ predict_bart <- function(bart_model, layers, cutoff = NULL) {
 #'
 #' @export
 response_curve_bart <- function(bart_model, data, predictor_names) {
-  # Calculate level values for each predictor variable
-  y_values <- lapply(predictor_names, function(name) {
+  # Initialize xind and levs
+  xind <- c()
+  levs <- list()
+  level_counts <- list()
+
+  # Loop over predictor names to construct xind and levs
+  for (name in predictor_names) {
     values <- na.omit(data[[name]])
-    values <- c(quantile(values, prob = seq(0.05, 0.95, length.out = 10)),
-                seq(min(values), max(values), length.out = 10))
-    return(sort(values))
-  })
+
+    if (is.character(values) | is.factor(values)) {
+      # Handle categorical variables - Filter levels with more than 0 counts
+      observed_levels <- table(values)  # Count occurrences of each level
+      observed_levels <- names(observed_levels[observed_levels > 0])
+      # Create dummy variable names as dbarts
+      if (length(observed_levels) == 2) {
+        dummy_name <- paste0(name, ".", observed_levels[-1])
+        xind <- c(xind, dummy_name)
+        levs[[length(levs) + 1]] <- c(0, 1) # Dummy variable takes values 0 and 1
+      } else {
+        for (lvl in observed_levels) {
+          dummy_name <- paste0(name, ".", lvl)
+          xind <- c(xind, dummy_name)
+          levs[[length(levs) + 1]] <- c(0, 1) # Dummy variable values
+        }
+      }
+    } else {
+      # Handle continuous variables
+      seq_vals <- seq(min(values), max(values), length.out = 10)
+      quant_vals <- quantile(values, prob = seq(0.05, 0.95, length.out = 10))
+      combined_vals <- sort(unique(c(seq_vals, quant_vals)))
+      xind <- c(xind, name)
+      levs[[length(levs) + 1]] <- combined_vals
+    }
+  }
 
   # Obtain variable response information using pdbart
-  var_r <- dbarts::pdbart(bart_model, xind = predictor_names, levs = y_values, pl = FALSE)
+  var_r <- dbarts::pdbart(bart_model, xind = xind, levs = levs, pl = FALSE)
 
   # Compute inverse probit values for each predictor variable
   inv_probit_df <- lapply(var_r$fd, function(fd) {
@@ -152,11 +189,45 @@ response_curve_bart <- function(bart_model, data, predictor_names) {
 
   # Calculate mean, 2.5th percentile, 97.5th percentile, and values of predictor variables
   data_var <- lapply(seq_along(predictor_names), function(i) {
-    prob_inv <- colMeans(inv_probit_df[[i]], na.rm = TRUE)
-    quantile_values_q25 <- apply(inv_probit_df[[i]], 2, quantile, probs = 0.025, na.rm = TRUE)
-    quantile_values_q975 <- apply(inv_probit_df[[i]], 2, quantile, probs = 0.975, na.rm = TRUE)
-    value <- var_r$levs[[i]]
-    data.frame(mean = prob_inv, q25 = quantile_values_q25, q975 = quantile_values_q975, value = value)
+    name <- predictor_names[i]
+    values <- na.omit(data[[name]])
+
+    if (is.character(values) | is.factor(values)) {
+      # Handle categorical variables - Filter levels with more than 0 counts
+      observed_levels <- table(values)  # Count occurrences of each level
+      observed_levels <- names(observed_levels[observed_levels > 0])
+      if (length(observed_levels) == 2) {
+        # For two-level categorical variables, include 0 and 1
+        dummy_name <- paste0(name, ".", observed_levels[-1])
+        dummy_index <- which(xind == dummy_name)
+        prob_inv <- colMeans(inv_probit_df[[dummy_index]], na.rm = TRUE)
+        quantile_values_q25 <- apply(inv_probit_df[[dummy_index]], 2, quantile, probs = 0.025, na.rm = TRUE)
+        quantile_values_q975 <- apply(inv_probit_df[[dummy_index]], 2, quantile, probs = 0.975, na.rm = TRUE)
+        data.frame(value = c(observed_levels[1], observed_levels[2]),
+                   mean = prob_inv,
+                   q25 = quantile_values_q25,
+                   q975 = quantile_values_q975)
+      } else {
+        # For multi-level categorical variables, use only the value 1 of the dummy
+        dummy_results <- lapply(seq_along(observed_levels), function(j) {
+          dummy_name <- paste0(name, ".", observed_levels[j])
+          dummy_index <- which(xind == dummy_name)
+          prob_inv <- colMeans(inv_probit_df[[dummy_index]], na.rm = TRUE)[2]
+          quantile_values_q25 <- apply(inv_probit_df[[dummy_index]], 2, quantile, probs = 0.025, na.rm = TRUE)[2]
+          quantile_values_q975 <- apply(inv_probit_df[[dummy_index]], 2, quantile, probs = 0.975, na.rm = TRUE)[2]
+          data.frame(value = observed_levels[j], mean = prob_inv, q25 = quantile_values_q25, q975 = quantile_values_q975)
+        })
+        do.call(rbind, dummy_results)
+      }
+    } else {
+      # Handle continuous variables
+      covariate_index <- which(xind == name)
+      prob_inv <- colMeans(inv_probit_df[[covariate_index]], na.rm = TRUE)
+      quantile_values_q25 <- apply(inv_probit_df[[covariate_index]], 2, quantile, probs = 0.025, na.rm = TRUE)
+      quantile_values_q975 <- apply(inv_probit_df[[covariate_index]], 2, quantile, probs = 0.975, na.rm = TRUE)
+      value <- var_r$levs[[covariate_index]]
+      data.frame(mean = prob_inv, q25 = quantile_values_q25, q975 = quantile_values_q975, value = value)
+    }
   })
 
   # Set names for the data frames
@@ -172,19 +243,21 @@ response_curve_bart <- function(bart_model, data, predictor_names) {
 #' by permuting the values of that variable and evaluating the change in performance (F-score is the performance metric).
 #'
 #' @param bart_model A BART model object.
+#' @param y Vector indicating presence (1) or absence (0).
+#' @param x Dataframe with same number of rows as the length of the vector `y` with the covariate values.
 #' @param cutoff A numeric threshold for converting predicted probabilities into presence-absence.
 #' @param n_repeats An integer indicating the number of times to repeat the permutation for each variable.
 #' @param seed An optional seed for random number generation.
 #' @return A data frame where each column corresponds to a predictor variable, and each row contains the variable importance scores across permutations.
 #'
 #' @export
-variable_importance <- function(bart_model, cutoff = 0, n_repeats = 10, seed = NULL) {
+variable_importance <- function(bart_model, y, x, cutoff = 0, n_repeats = 10, seed = NULL) {
   predict.bart <- utils::getFromNamespace("predict.bart", "dbarts")
   set.seed(seed)
 
-  # Get presence-absence data
-  y <- bart_model$fit$data@y
-  x <- as.data.frame(bart_model$fit$data@x) # TODO: CHECK IF THIS KEEPS VARIABLE NAME
+  # ToDo: Get presence-absence data directly from BART object
+  # y <- bart_model$fit$data@y
+  # x <- as.data.frame(bart_model$fit$data@x)
 
   # Calculate baseline performance metric
   prob <- colMeans(predict.bart(bart_model, x))
@@ -256,64 +329,99 @@ pa_optimal_cutoff <- function(y, x, model, seed = NULL) {
   return(pa_cutoff)
 }
 
-
-#' Cross-Validation for BART Model
+#' Cross-validation for BART model
 #'
-#' This function performs k-fold cross-validation for a Bayesian Additive Regression Trees (BART) model
+#' This function performs cross-validation for a Bayesian Additive Regression Trees (BART) model
 #' using presence-absence data and environmental covariate layers. It calculates various performance metrics
 #' for model evaluation.
 #'
 #' @param data Data frame with a column (named 'pa') indicating presence (1) or absence (0) and columns for the predictor variables.
-#' @param k Integer; number of folds for cross-validation (default is 10).
+#' @param folds A vector of fold assignments (same length as `data`).
+#' @param predictor_cols Optional; a character vector of column names to be used as predictors. If NULL, all columns except 'pa' will be used.
 #' @param seed Optional; random seed.
 #'
-#' @return A data frame containing the true positives (TP), false positives (FP), false negatives (FN), true negatives (TN),
-#' and various performance metrics including precision (PREC), sensitivity (SEN), specificity (SPC), false discovery rate (FDR),
-#' negative predictive value (NPV), false negative rate (FNR), false positive rate (FPR), F-score, accuracy (ACC), balanced accuracy (BA),
-#' and true skill statistic (TSS) for each fold.
+#' @return A list with:
+#' \describe{
+#'   \item{metrics}{A data frame containing the true positives (TP), false positives (FP), false negatives (FN), true negatives (TN), and various performance metrics including precision (PREC), sensitivity (SEN), specificity (SPC), false discovery rate (FDR), negative predictive value (NPV), false negative rate (FNR), false positive rate (FPR), F-score, accuracy (ACC), balanced accuracy (BA), and true skill statistic (TSS) for each fold.}
+#'   \item{predictions}{Data frame with observed, predicted, probability, and fold assignment per test instance.}
+#' }
 #'
 #' @export
-cv_bart <- function(data, k = 10, seed = NULL){
+cross_validate_model <- function(data, folds, predictor_cols = NULL, seed = NULL) {
   predict.bart <- utils::getFromNamespace("predict.bart", "dbarts")
   set.seed(seed)
-  n <- nrow(data)
-  # Create index vector
-  k_index <- rep(1:k, length.out = n)
-  # Randomize vector
-  k_index <- sample(k_index)
-  data$k <- k_index
-  TP <- c()
-  FP <- c()
-  FN <- c()
-  TN <- c()
-  for (i in 1:k){
-    # Split train-test
-    train <- data[data$k != i, ]
-    test <- data[data$k == i, ]
+
+  if (is.null(predictor_cols)) {
+    predictor_cols <- setdiff(colnames(data), "pa")
+  }
+
+  fold_index <- sort(unique(folds))
+  TP <- FP <- FN <- TN <- AUC <- CBI <- c()
+  predictions <- list()
+  for (i in fold_index) {
+    train_idx <- which(folds != i)
+    test_idx <- which(folds == i)
+
+    train <- data[train_idx, ]
+    test <- data[test_idx, ]
+
+    # Skip fold if only one class
+    if (length(unique(train$pa)) < 2 || length(unique(test$pa)) < 2) {
+      warning(paste("Skipping fold", i, "due to insufficient classes in training or testing data."))
+      TP <- c(TP, NA)
+      FP <- c(FP, NA)
+      FN <- c(FN, NA)
+      TN <- c(TN, NA)
+      CBI <- c(CBI, NA)
+      AUC <- c(AUC, NA)
+      next
+    }
 
     # Fit model
     bart_model <- fit_bart_model(
       y = train[, "pa"],
-      x = train[, colnames(train) != "pa", drop = FALSE],
+      x = train[, predictor_cols, drop = FALSE],
       seed = seed
     )
 
     # Compute optimal cutoff to predict presence/absence
     cutoff <- pa_optimal_cutoff(
       y = train[, "pa"],
-      x = train[, colnames(train) != "pa", drop = FALSE],
+      x = train[, predictor_cols, drop = FALSE],
       bart_model
     )
 
-    pred <- predict.bart(bart_model, test[, colnames(test) != "pa", drop = FALSE])
-    pred <- colMeans(pred)
-    potential_presences <- ifelse(pred >= cutoff, 1, 0)
+    probs <- colMeans(predict.bart(bart_model, test[, predictor_cols, drop = FALSE]))
+    preds <- ifelse(probs >= cutoff, 1, 0)
 
     # Confusion matrices
-    TP <- c(TP, sum(test$pa == 1 & potential_presences == 1))
-    FP <- c(FP, sum(test$pa == 0 & potential_presences == 1))
-    FN <- c(FN, sum(test$pa == 1 & potential_presences == 0))
-    TN <- c(TN, sum(test$pa == 0 & potential_presences == 0))
+    TP <- c(TP, sum(test$pa == 1 & preds == 1))
+    FP <- c(FP, sum(test$pa == 0 & preds == 1))
+    FN <- c(FN, sum(test$pa == 1 & preds == 0))
+    TN <- c(TN, sum(test$pa == 0 & preds == 0))
+
+    # Compute AUC
+    auc_val <- tryCatch({
+      pROC::auc(pROC::roc(test$pa, probs, levels = c(0, 1), direction = "<"))
+    }, error = function(e) NA)
+    AUC <- c(AUC, as.numeric(auc_val))
+
+    # Compute Boyce Index
+    boyce <- tryCatch({
+      contBoyce(pres = probs[test$pa == 1], contrast = probs[test$pa == 0])
+    }, error = function(e) NA)
+    CBI <- c(CBI, boyce)
+
+    predictions[[i]] <- data.frame(
+      ID = test_idx,
+      decimalLongitude = test$decimalLongitude,
+      decimalLatitude = test$decimalLatitude,
+      timestamp = test$timestamp,
+      pa = test$pa,
+      predicted = preds,
+      probability = probs,
+      fold = i
+    )
   }
 
   # Metrics
@@ -329,11 +437,14 @@ cv_bart <- function(data, k = 10, seed = NULL){
   BA <- (SEN + SPC) / 2
   TSS <- SEN + SPC - 1
 
-  cv_res <- data.frame(
-    TP = TP, FP = FP, FN = FN, TN = TN, PREC = PREC, SEN = SEN, SPC = SPC,
-    FDR = FDR, NPV = NPV, FNR = FNR, FPR = FPR, Fscore = Fscore, ACC = ACC,
-    BA = BA, TSS = TSS
+  metrics <- data.frame(
+    fold = fold_index,
+    TP = TP, FP = FP, FN = FN, TN = TN,
+    PREC = PREC, SEN = SEN, SPC = SPC, FDR = FDR, NPV = NPV, FNR = FNR, FPR = FPR,
+    Fscore = Fscore, ACC = ACC, BA = BA, TSS = TSS,
+    CBI = CBI, AUC = AUC,
+    status = ifelse(is.na(TP), "skipped", "valid")
   )
 
-  return(cv_res)
+  return(list(metrics = metrics, predictions = do.call(rbind, predictions)))
 }

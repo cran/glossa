@@ -10,6 +10,7 @@
 #' @param file_path The file path to the CSV file.
 #' @param file_name Optional. The name of the file. If not provided, the base name of the file path is used.
 #' @param show_modal Optional. Logical. Whether to show a modal notification for warnings (use in Shiny). Default is FALSE.
+#' @param timestamp_mapping Optional. A vector with the timestamp mapping of the environmental layers.
 #' @param coords Optional. Character vector of length 2 specifying the names of the columns containing the longitude and latitude coordinates. Default is c("decimalLongitude", "decimalLatitude").
 #' @param sep Optional. The field separator character. Default is tab-separated.
 #' @param dec Optional. The decimal point character. Default is ".".
@@ -17,7 +18,7 @@
 #' @return A data frame with the validated data if the file has the expected columns and formats, NULL otherwise.
 #' @keywords internal
 #' @export
-read_presences_absences_csv <- function(file_path, file_name = NULL, show_modal = FALSE, coords = c("decimalLongitude", "decimalLatitude"), sep = "\t", dec = ".") {
+read_presences_absences_csv <- function(file_path, file_name = NULL, show_modal = FALSE, timestamp_mapping = NULL, coords = c("decimalLongitude", "decimalLatitude"), sep = "\t", dec = ".") {
 
   # Helper function to show notifications
   show_warning <- function(message) {
@@ -48,10 +49,29 @@ read_presences_absences_csv <- function(file_path, file_name = NULL, show_modal 
 
   # Process timestamp/year columns
   if ("timestamp" %in% colnames(data)) {
-    data$timestamp <- data$timestamp - min(data$timestamp) + 1
+    data$timestamp_original <- data$timestamp
+    if (!is.null(timestamp_mapping)) {
+      data$timestamp <- match(data$timestamp, timestamp_mapping)
+      if (any(is.na(data$timestamp))) {
+        show_warning("Some timestamps in your occurrence file do not match any raster timestamps Please check your data.")
+        return(NULL)
+      }
+    } else {
+      data$timestamp <- data$timestamp - min(data$timestamp) + 1
+    }
   } else if ("year" %in% colnames(data)) {
-    data$timestamp <- data$year - min(data$year) + 1
+    data$timestamp_original <- data$year
+    if (!is.null(timestamp_mapping)) {
+      data$timestamp <- match(data$year, timestamp_mapping)
+      if (any(is.na(data$timestamp))) {
+        show_warning("Some timestamps in your occurrence file do not match any raster timestamps Please check your data.")
+        return(NULL)
+      }
+    } else {
+      data$timestamp <- data$year - min(data$year) + 1
+    }
   } else {
+    data$timestamp_original <- 1
     data$timestamp <- 1
     show_warning(paste0("'timestamp' column is not present in file ", file_name, ". Assuming all occurrences were observed at time 1."))
   }
@@ -63,7 +83,7 @@ read_presences_absences_csv <- function(file_path, file_name = NULL, show_modal 
   }
 
   # Subset to required columns
-  data <- data[, c(coords, "timestamp", "pa")]
+  data <- data[, c(coords, "timestamp_original", "timestamp", "pa")]
 
   # Remove rows with NA values
   data <- data[complete.cases(data), ]
@@ -113,10 +133,15 @@ read_layers_zip <- function(file_path, extend = TRUE, first_layer = FALSE, show_
   # Extract contents of the zip file
   tmpdir <- tempdir()
   zip_contents <- utils::unzip(file_path, exdir = tmpdir)
+  # Clean out macOS hidden files/folders (.__, .DS_Store, and __MACOSX folder)
+  zip_contents <- zip_contents[!grepl("(^|/)__MACOSX|/\\._|/\\.DS_Store$", zip_contents)]
   covariates <- unique(dirname(zip_contents))
 
+  # Filter files to include only raster formats (e.g., .tif, .asc, .nc)
+  raster_extensions <- c("tif", "tiff", "asc", "nc")
+
   # Verify if each covariate has the same number of files
-  n_files <- sapply(covariates, function(x) length(list.files(x)))
+  n_files <- sapply(covariates, function(x) length(list.files(x, pattern = paste0("\\.(", paste(raster_extensions, collapse = "|"), ")$"), full.names = TRUE)))
   if (length(unique(n_files)) != 1) {
     show_warning("Error: The environmental layers uploaded differ in number between the different variables")
     return(NULL)
@@ -124,7 +149,8 @@ read_layers_zip <- function(file_path, extend = TRUE, first_layer = FALSE, show_
 
   # Load the first layer of each covariate to check CRS and resolution
   layers <- lapply(covariates, function(x) {
-    tryCatch(terra::rast(list.files(x, full.names = TRUE)[n_files[1]]), error = function(e) NULL)
+    files <- list.files(x, pattern = paste0("\\.(", paste(raster_extensions, collapse = "|"), ")$"), full.names = TRUE)
+    tryCatch(terra::rast(files[n_files[1]]), error = function(e) NULL)
   })
   names(layers) <- sub("([^.]+)\\.[[:alnum:]]+$", "\\1", basename(covariates))
   if (any(sapply(layers, is.null))) {
@@ -146,8 +172,9 @@ read_layers_zip <- function(file_path, extend = TRUE, first_layer = FALSE, show_
   layers <- lapply(layers, function(x) terra::project(x, "epsg:4326"))
 
   # Check if all layers have the same resolution
-  res_list <- sapply(layers, function(x) paste(terra::res(x), collapse = ""))
-  if (length(unique(res_list)) != 1) {
+  res_list <- lapply(layers, terra::res)
+  is_consistent <- all(sapply(res_list[-1], function(x) isTRUE(all.equal(x, res_list[[1]], tolerance = 1e-7))))
+  if (!is_consistent) {
     show_warning("The layers uploaded have different resolution.")
     return(NULL)
   }
@@ -161,8 +188,25 @@ read_layers_zip <- function(file_path, extend = TRUE, first_layer = FALSE, show_
   # Load and process all layers
   layers <- lapply(covariates, function(cov_dir) {
     cov_name <- basename(cov_dir)
-    raster_layers <- terra::rast(list.files(cov_dir, full.names = TRUE))
-    terra::project(raster_layers, "epsg:4326")
+    raster_layers <- terra::rast(list.files(cov_dir, pattern = paste0("\\.(", paste(raster_extensions, collapse = "|"), ")$"), full.names = TRUE))
+    # Project to WGS84 CRS
+    raster_layers <- terra::project(raster_layers, "epsg:4326")
+
+    # Check and clean NA factor levels
+    if (any(terra::is.factor(raster_layers))) {
+      for (j in seq_len(terra::nlyr(raster_layers))) {
+        if (terra::is.factor(raster_layers[[j]])) {
+          levs <- terra::levels(raster_layers[[j]])[[1]]
+          if (any(is.na(levs[, 2]))) {
+            # Remove rows with NA label
+            levs <- levs[!is.na(levs[, 2]), ]
+            levels(raster_layers[[j]]) <- levs
+          }
+        }
+      }
+    }
+
+    return(raster_layers)
   })
   names(layers) <- basename(covariates)
 
@@ -272,12 +316,13 @@ read_extent_polygon <- function(file_path, show_modal = FALSE) {
 #' This function validates a ZIP file containing environmental layers. It checks if the layers have the same number of files, CRS (Coordinate Reference System), and resolution.
 #'
 #' @param file_path Path to the ZIP file containing environmental layers.
+#' @param timestamp_mapping Optional. A vector with the timestamp mapping of the environmental layers.
 #' @param show_modal Optional. Logical. Whether to show a modal notification for warnings. Default is FALSE.
 #'
 #' @return TRUE if the layers pass validation criteria, FALSE otherwise.
 #' @keywords internal
 #' @export
-validate_layers_zip <- function(file_path, show_modal = FALSE) {
+validate_layers_zip <- function(file_path, timestamp_mapping = NULL, show_modal = FALSE) {
   # Helper function to show warnings and notifications
   show_warning <- function(message, type = "error") {
     warning(message)
@@ -287,21 +332,37 @@ validate_layers_zip <- function(file_path, show_modal = FALSE) {
   # Extract contents of the ZIP file
   tmpdir <- tempdir()
   zip_contents <- utils::unzip(file_path, exdir = tmpdir)
-
+  # Clean out macOS hidden files/folders (.__, .DS_Store, and __MACOSX folder)
+  zip_contents <- zip_contents[!grepl("(^|/)__MACOSX|/\\._|/\\.DS_Store$", zip_contents)]
   # Get unique covariate directories
   covariate_dirs <- unique(dirname(zip_contents))
 
+  # Filter files to include only raster formats (e.g., .tif, .asc, .nc)
+  raster_extensions <- c("tif", "tiff", "asc", "nc")
+
   # Verify if each covariate has the same number of files
-  n_files <- sapply(covariate_dirs, function(dir) length(list.files(dir)))
+  n_files <- sapply(covariate_dirs, function(dir) {
+    length(list.files(dir, pattern = paste0("\\.(", paste(raster_extensions, collapse = "|"), ")$"), full.names = TRUE))
+  })
   if (length(unique(n_files)) != 1) {
     show_warning("Error: The environmental layers uploaded differ in number between the different variables.")
     return(FALSE)
   }
 
+  if (!is.null(timestamp_mapping)){
+    # Check if the number of files matches the length of the timestamp mapping
+    if (any(length(timestamp_mapping) != n_files)) {
+      show_warning("Error: The number of timestamps in the environmental layers does not match the length of the timestamp mapping.")
+      return(FALSE)
+    }
+  }
+
   # Load one layer from each covariate to check CRS and resolution
   layers <- lapply(covariate_dirs, function(dir) {
-    tryCatch(terra::rast(list.files(dir, full.names = TRUE)[n_files[1]]),
-             error = function(e) NULL)
+    tryCatch({
+      files <- list.files(dir, pattern = paste0("\\.(", paste(raster_extensions, collapse = "|"), ")$"), full.names = TRUE)
+      terra::rast(files[1])
+    }, error = function(e) NULL)
   })
   names(layers) <- basename(covariate_dirs)
   if (any(sapply(layers, is.null))) {
@@ -316,17 +377,15 @@ validate_layers_zip <- function(file_path, show_modal = FALSE) {
     return(FALSE)
   }
   if (length(unique(crs_list)) != 1) {
-    show_warning("Warning: There are layers with different coordinate reference systems (CRS). We will project all to WGS84.", type = "warning")
+    show_warning("Warning: Layers have different coordinate reference systems (CRS). Projecting to WGS84.", type = "warning")
   }
 
-  # Project all layers to WGS84
-  layers <- lapply(layers, function(layer) {
-    terra::project(layer, "epsg:4326")
-  })
+  layers <- lapply(layers, function(layer) terra::project(layer, "epsg:4326"))
 
   # Check if all layers have the same resolution
-  res_list <- sapply(layers, function(layer) paste(terra::res(layer), collapse = ""))
-  if (length(unique(res_list)) != 1) {
+  res_list <- lapply(layers, terra::res)
+  is_consistent <- all(sapply(res_list[-1], function(x) isTRUE(all.equal(x, res_list[[1]], tolerance = 1e-7))))
+  if (!is_consistent) {
     show_warning("The layers uploaded have different resolutions.")
     return(FALSE)
   }
@@ -335,6 +394,18 @@ validate_layers_zip <- function(file_path, show_modal = FALSE) {
   ext_list <- lapply(layers, terra::ext)
   if (length(unique(ext_list)) != 1) {
     show_warning("Warning: There are layers with different extents. We will transform layers to the largest extent.", type = "warning")
+  }
+
+  # Check if factor levels for categorical variables are not NA
+  categorical_vars <- sapply(layers, function(x) any(terra::is.factor(x)))
+  if (any(categorical_vars)) {
+    na_factor_levels <- sapply(layers[categorical_vars], function(x){
+      any(is.na(terra::levels(x[[1]])[[1]][, 2]))
+    })
+
+    if (any(na_factor_levels)) {
+      show_warning("Warning: There are layers with NA factor levels. We will remove those levels.", type = "warning")
+    }
   }
 
   # If all checks passed, return TRUE
@@ -365,10 +436,15 @@ validate_fit_projection_layers <- function(fit_layers_path, proj_layers_path, sh
   tmpdir_proj <- tempdir()
   fit_layers_content <- utils::unzip(fit_layers_path, exdir = tmpdir_fit)
   proj_contents <- utils::unzip(proj_layers_path, exdir = tmpdir_proj)
+  # Clean out macOS hidden files/folders (.__, .DS_Store, and __MACOSX folder)
+  fit_layers_content <- fit_layers_content[!grepl("(^|/)__MACOSX|/\\._|/\\.DS_Store$", fit_layers_content)]
+  proj_contents <- proj_contents[!grepl("(^|/)__MACOSX|/\\._|/\\.DS_Store$", proj_contents)]
 
-  # Get unique covariate directories
-  fit_covariates <- basename(unique(dirname(fit_layers_content)))
-  proj_covariates <- basename(unique(dirname(proj_contents)))
+
+  # Filter files to include only raster formats (e.g., .tif, .asc, .nc)
+  raster_extensions <- c("tif", "tiff", "asc", "nc")
+  fit_covariates <- basename(unique(dirname(fit_layers_content[grepl(paste0("\\.(", paste(raster_extensions, collapse = "|"), ")$"), fit_layers_content)])))
+  proj_covariates <- basename(unique(dirname(proj_contents[grepl(paste0("\\.(", paste(raster_extensions, collapse = "|"), ")$"), proj_contents)])))
 
   # Check if they have the same covariates
   if (!all(sort(fit_covariates) == sort(proj_covariates))) {
@@ -404,7 +480,11 @@ validate_pa_fit_time <- function(pa_data, fit_layers_path, show_modal = FALSE) {
 
   # Calculate the length of the time period in the fit layers
   zip_contents <- utils::unzip(fit_layers_path, list = TRUE)
-  files <- zip_contents$Name[!grepl("/$", zip_contents$Name)]
+  # Clean out macOS hidden files/folders (.__, .DS_Store, and __MACOSX folder)
+  zip_contents <- zip_contents[!grepl("(^|/)__MACOSX|/\\._|/\\.DS_Store$", zip_contents$Name), ]
+
+  raster_extensions <- c("tif", "tiff", "asc", "nc")
+  files <- zip_contents$Name[grepl(paste0("\\.(", paste(raster_extensions, collapse = "|"), ")$"), zip_contents$Name)]
   covariates <- unique(dirname(files))
   fit_layers_time_period_length <- length(files) / length(covariates)
 
