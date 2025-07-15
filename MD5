@@ -1,6 +1,6 @@
-e63b274f8735ee69224771b26c4f4bbf *DESCRIPTION
+0aa7d295849050ba64ad96bfbe6ff331 *DESCRIPTION
 f4c0c7fac6256be1f898b5aef1b88915 *NAMESPACE
-8c8b66e225df887788afd7a5939d128e *NEWS.md
+7844b72acecb8d2c071126ff2065f2e6 *NEWS.md
 ebea12cd1f315b7ad312d100d49bb071 *R/bart_functions.R
 97e95d0ef56b93928434ce107fee658c *R/generate_pseudo_absences.R
 74fb0bc5994baf8c9f5b6acfb81cc0ed *R/glossa-package.R
@@ -11,7 +11,7 @@ e4fd46f06dd23a313f142a7af5c3217d *R/mod_file_input_area.R
 e1bbc5af57f0acd874b19c9bfc192386 *R/process_polygon.R
 0ed6b263d8f09f8bb3ba578a8ec63b2f *R/process_presence_absence.R
 e89b18d086f77318a3b581fa4104ff1a *R/read_validate_files.R
-4c35cbbe5820b56dc564dff26c0b6637 *R/run_glossa.R
+9762632391b723e47e2ef19e40d829c3 *R/run_glossa.R
 1ef1b591fd6cf4680dd091a697595b45 *R/utils.R
 cb3b20077bebc5da31fc1b46c657c0ff *build/partial.rdb
 32cc4e2be32f1b9eceb1b972f9aefcf4 *inst/CITATION
@@ -20,7 +20,7 @@ dcf628830abaa9260005f1fe585d6157 *inst/app/Rmd/documentation.Rmd
 281cc1e6db63321323fde4eb1769200f *inst/app/Rmd/how_to_cite.Rmd
 15ae5c1e791ce1dcb8afecf80de65c2d *inst/app/Rmd/lastest_updates.Rmd
 b24f3134d4a395a9688b4054c278abcc *inst/app/global.R
-fae2ffb0132d5d3abc8d2b8b0f3bc263 *inst/app/server.R
+37a0dd4827402c05f1782dbab91ea36d *inst/app/server.R
 dbee36fac0a965f8ac43337e8bd39f9a *inst/app/ui.R
 1fc425baa0c04866712a6606fe563fbf *inst/app/www/logo_csic.png
 ce8c0d96369c688d1a2d514501bc071b *inst/app/www/logo_glossa.gif
@@ -76,7 +76,7 @@ f2ba83f5fd4559b51b5d84fdb1d5af8a *man/read_layers_zip.Rd
 d040e4facbb0f25806933566f639b08c *man/remove_duplicate_points.Rd
 61a058d26f566ec333f1518b5f917e14 *man/remove_points_polygon.Rd
 a64d38e71021d8da215c5c792a07689a *man/response_curve_bart.Rd
-2f8ef320a4ce50770f18bd32d9da28ad *man/run_glossa.Rd
+cd177bba03be7c9228b597bdac51a1a8 *man/run_glossa.Rd
 a6dd9bb3e0498dadb4a72ab1fdd93c6c *man/sensitivity.Rd
 abaca4a798c2b4f56cc64032a453f1d4 *man/sparkvalueBox.Rd
 629ea05bbc9016986a4996c9cb3f336e *man/specificity.Rd
@@ -90,7 +90,7 @@ f7690430622bc0cf04ab2782e7f0e6cb *tests/testthat/Rplots.pdf
 ba5a4028b6ad936d6ef083bd1f21c080 *tests/testthat/test-bart_functions.R
 deb1960942db5480fa05cd918075c1dc *tests/testthat/test-cross_validate_model.R
 2d605484b5435afe3a94b8e13864260b *tests/testthat/test-generate_pseudo_absences.R
-5209ee56ce3738f12850136ce240b436 *tests/testthat/test-glossa_analysis.R
+74b8c3cc254351ce0dd9d9b282388722 *tests/testthat/test-glossa_analysis.R
 358e232e12fbc5bf9e68884f24a57714 *tests/testthat/test-process_layers.R
 62b4dd316f258a83a4b73056468af34e *tests/testthat/test-process_polygon.R
 a72811caf6749e21d97cbd5b06fda090 *tests/testthat/test-process_presence_absence.R
