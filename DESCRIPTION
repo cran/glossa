@@ -2,7 +2,7 @@ Type: Package
 Package: glossa
 Title: User-Friendly 'shiny' App for Bayesian Species Distribution
         Models
-Version: 1.2.3
+Version: 1.2.4
 Authors@R: c(
     person("Jorge", "Mestre-Tomás", , "jorge.mestre.tomas@csic.es", role = c("aut", "cre"),
            comment = c(ORCID = "0000-0002-8983-3417")),
@@ -40,11 +40,11 @@ Encoding: UTF-8
 Language: en-US
 RoxygenNote: 7.3.2
 NeedsCompilation: no
-Packaged: 2025-08-27 12:37:45 UTC; jorge
+Packaged: 2025-09-19 15:33:37 UTC; jorge
 Author: Jorge Mestre-Tomás [aut, cre] (ORCID:
     <https://orcid.org/0000-0002-8983-3417>),
   Alba Fuster-Alonso [aut] (ORCID:
     <https://orcid.org/0000-0002-7283-291X>)
 Maintainer: Jorge Mestre-Tomás <jorge.mestre.tomas@csic.es>
 Repository: CRAN
-Date/Publication: 2025-08-27 13:00:02 UTC
+Date/Publication: 2025-09-19 16:40:02 UTC
